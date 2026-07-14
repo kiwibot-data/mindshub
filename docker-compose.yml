@@ -66,6 +66,18 @@ services:
       environment: "production"
       managed-by: "data@robot.com"
       repository: "https://github.com/kiwibot-data/mindshub"
+      # --- Traefik routing (docker provider reads these from the container) ---
+      # Dokploy's Compose type does not auto-inject Traefik labels, so we set
+      # them explicitly, matching the proven pattern of other apps on this host.
+      traefik.enable: "true"
+      traefik.docker.network: "dokploy-network"
+      traefik.http.routers.mindshub-cowork-secure.entrypoints: "websecure"
+      traefik.http.routers.mindshub-cowork-secure.rule: "Host(`minds.fredhii.com`)"
+      traefik.http.routers.mindshub-cowork-secure.tls.certresolver: "letsencrypt"
+      traefik.http.routers.mindshub-cowork-web.entrypoints: "web"
+      traefik.http.routers.mindshub-cowork-web.middlewares: "redirect-to-https@file"
+      traefik.http.routers.mindshub-cowork-web.rule: "Host(`minds.fredhii.com`)"
+      traefik.http.services.mindshub-cowork.loadbalancer.server.port: "26866"
 
   # Optional web SPA (nginx). Only needed if you also want the browser UI.
   # You said the goal is API consumption, so it is disabled by default.
