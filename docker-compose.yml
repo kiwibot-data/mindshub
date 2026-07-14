@@ -1,3 +1,19 @@
+# MindsHub Cowork — self-hosted on Dokploy (kiwibot-atlas)
+#
+# Source: https://github.com/mindsdb/minds-platform (superproject with submodules)
+# The `api` service exposes the REST API at :26866/api/v1 (health at /health).
+# You consume Anton programmatically through this API using an ANTON_MINDS_API_KEY.
+#
+# IMPORTANT — build context:
+#   There are NO prebuilt images. The api/web images build from the minds-platform
+#   source tree, which pulls code from git submodules (core_api, core_agent, frontend).
+#   Dokploy MUST clone with submodules. See README.md for the two supported paths.
+#
+# This file is a customized override of the upstream docker-compose.yml:
+#   - api-only by default (you consume via API); `web` is optional (commented).
+#   - Minds Cloud auth via ANTON_MINDS_* env vars.
+#   - Required kiwibot-atlas labels, resource limits, restart policy.
+
 services:
   api:
     build:
@@ -7,10 +23,22 @@ services:
       COWORK_SERVER_HOST: "0.0.0.0"
       COWORK_SERVER_PORT: "26866"
       DATABASE_URI: "sqlite:////home/cowork/.cowork/cowork.db"
-      # ANTON_ANTHROPIC_API_KEY: "sk-ant-..."
+      # --- Minds Cloud / MindsHub auth (primary) ---
+      ANTON_MINDS_ENABLED: "true"
+      ANTON_MINDS_API_KEY: "${ANTON_MINDS_API_KEY:?set ANTON_MINDS_API_KEY in Dokploy env}"
+      ANTON_MINDS_URL: "${ANTON_MINDS_URL:-}"           # leave empty to use the Minds cloud default
+      # ANTON_MINDS_MIND_NAME: "${ANTON_MINDS_MIND_NAME:-}"
+      # --- Optional BYOK overrides (only if NOT using Minds routing) ---
+      # ANTON_PLANNING_PROVIDER: "anthropic"
+      # ANTON_ANTHROPIC_API_KEY: "${ANTON_ANTHROPIC_API_KEY:-}"
+      # ANTON_OPENAI_API_KEY: "${ANTON_OPENAI_API_KEY:-}"
+      ANTON_DISABLE_AUTOUPDATES: "true"
+      ANTON_ANALYTICS_ENABLED: "false"
     volumes:
       - cowork-data:/home/cowork/.cowork
     ports:
+      # Dokploy/Traefik routes the public domain to this container port.
+      # Keep published for direct/internal access; remove if only Traefik should reach it.
       - "26866:26866"
     restart: unless-stopped
     healthcheck:
@@ -18,19 +46,50 @@ services:
              "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:26866/health',timeout=3).status==200 else 1)"]
       interval: 30s
       timeout: 5s
-      start_period: 20s
+      start_period: 40s
       retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+    labels:
+      app: "mindshub-cowork"
+      service: "cowork-api"
+      component: "api"
+      team: "data"
+      environment: "production"
+      managed-by: "data@robot.com"
+      repository: "https://github.com/mindsdb/minds-platform"
 
-  web:
-    build:
-      context: .
-      dockerfile: docker/web.Dockerfile
-    ports:
-      - "3000:80"
-    depends_on:
-      api:
-        condition: service_healthy
-    restart: unless-stopped
+  # Optional web SPA (nginx). Only needed if you also want the browser UI.
+  # You said the goal is API consumption, so it is disabled by default.
+  # web:
+  #   build:
+  #     context: .
+  #     dockerfile: docker/web.Dockerfile
+  #   ports:
+  #     - "3000:80"
+  #   depends_on:
+  #     api:
+  #       condition: service_healthy
+  #   restart: unless-stopped
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         cpus: "1.0"
+  #         memory: 512M
+  #   labels:
+  #     app: "mindshub-cowork"
+  #     service: "cowork-web"
+  #     component: "frontend"
+  #     team: "data"
+  #     environment: "production"
+  #     managed-by: "data@robot.com"
+  #     repository: "https://github.com/mindsdb/minds-platform"
 
 volumes:
   cowork-data:
