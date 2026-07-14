@@ -1,14 +1,11 @@
 FROM python:3.12-slim AS builder
 
-RUN pip install uv --no-cache-dir
-
-WORKDIR /src
-COPY backend/core_agent/ ./core_agent/
-COPY backend/core_api/ ./core_api/
-
-RUN python -m venv /opt/venv && \
-    /opt/venv/bin/pip install uv --no-cache-dir && \
-    VIRTUAL_ENV=/opt/venv /opt/venv/bin/uv pip install ./core_agent ./core_api
+# Self-host build: install the published package from PyPI instead of the git
+# submodules. Dokploy does not populate submodules on clone, so the upstream
+# `COPY backend/core_agent core_api` approach yields empty dirs. cowork-server
+# pulls anton-agent + hermes-agent transitively.
+RUN python -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir "cowork-server==0.26.7.13.3"
 
 FROM python:3.12-slim AS runtime
 
