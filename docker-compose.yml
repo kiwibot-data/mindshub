@@ -1,18 +1,18 @@
 # MindsHub Cowork — self-hosted on Dokploy (kiwibot-atlas)
 #
-# Source: https://github.com/mindsdb/minds-platform (superproject with submodules)
-# The `api` service exposes the REST API at :26866/api/v1 (health at /health).
-# You consume Anton programmatically through this API using an ANTON_MINDS_API_KEY.
+# Source: https://github.com/mindsdb/mindshub (fork). The `api` service exposes
+# the REST API at :26866/api/v1 (health at /api/v1/health). Consumed via an
+# ANTON_MINDS_API_KEY.
 #
-# IMPORTANT — build context:
-#   There are NO prebuilt images. The api/web images build from the minds-platform
-#   source tree, which pulls code from git submodules (core_api, core_agent, frontend).
-#   Dokploy MUST clone with submodules. See README.md for the two supported paths.
+# Build: docker/api.Dockerfile installs cowork-server from PyPI (pulls
+# anton-agent + hermes-agent). No git submodules are needed at build time.
 #
-# This file is a customized override of the upstream docker-compose.yml:
-#   - api-only by default (you consume via API); `web` is optional (commented).
-#   - Minds Cloud auth via ANTON_MINDS_* env vars.
-#   - Required kiwibot-atlas labels, resource limits, restart policy.
+# Domain routing on Dokploy: the service joins the external `dokploy-network`
+# so Traefik can reach it. In Dokploy → Domains, point the domain to service
+# `api`, container port 26866, HTTPS/Let's Encrypt.
+#
+# Customized over upstream: api-only (web commented), Minds auth env,
+# kiwibot-atlas labels, resource limits, restart policy.
 
 services:
   api:
@@ -56,6 +56,8 @@ services:
         reservations:
           cpus: "0.5"
           memory: 512M
+    networks:
+      - dokploy-network
     labels:
       app: "mindshub-cowork"
       service: "cowork-api"
@@ -63,7 +65,7 @@ services:
       team: "data"
       environment: "production"
       managed-by: "data@robot.com"
-      repository: "https://github.com/mindsdb/minds-platform"
+      repository: "https://github.com/kiwibot-data/mindshub"
 
   # Optional web SPA (nginx). Only needed if you also want the browser UI.
   # You said the goal is API consumption, so it is disabled by default.
@@ -94,3 +96,7 @@ services:
 volumes:
   cowork-data:
     driver: local
+
+networks:
+  dokploy-network:
+    external: true
