@@ -63,6 +63,7 @@ services:
           memory: 512M
     networks:
       - dokploy-network
+      - default
     labels:
       app: "mindshub-cowork"
       service: "cowork-api"
@@ -83,6 +84,45 @@ services:
       traefik.http.routers.mindshub-cowork-web.middlewares: "redirect-to-https@file"
       traefik.http.routers.mindshub-cowork-web.rule: "Host(`minds.fredhii.com`)"
       traefik.http.services.mindshub-cowork.loadbalancer.server.port: "26866"
+
+  # One-shot provisioner: after the API is healthy, it writes the LLM provider
+  # settings into the server DB (which lives in the volume, NOT in git). This
+  # makes the Minds provider config reproducible on every deploy / fresh volume.
+  # Requires COWORK_AUTH_TOKEN + ANTON_MINDS_API_KEY in the Dokploy env; if
+  # either is missing it skips gracefully (does not break the deploy).
+  provisioner:
+    image: curlimages/curl:8.11.1
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      ANTON_MINDS_API_KEY: "${ANTON_MINDS_API_KEY:-}"
+      COWORK_AUTH_TOKEN: "${COWORK_AUTH_TOKEN:-}"
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -e
+        if [ -z "$$COWORK_AUTH_TOKEN" ] || [ -z "$$ANTON_MINDS_API_KEY" ]; then
+          echo "SKIP provisioning: set COWORK_AUTH_TOKEN and ANTON_MINDS_API_KEY in Dokploy env"; exit 0
+        fi
+        A=http://api:26866/api/v1/settings
+        H_AUTH="Authorization: Bearer $$COWORK_AUTH_TOKEN"
+        H_CT="Content-Type: application/json"
+        curl -fsS -X PUT "$$A/minds_api_key"     -H "$$H_AUTH" -H "$$H_CT" -d "{\"value\":\"$$ANTON_MINDS_API_KEY\"}" >/dev/null
+        curl -fsS -X PUT "$$A/planning_provider" -H "$$H_AUTH" -H "$$H_CT" -d '{"value":"minds_cloud"}' >/dev/null
+        curl -fsS -X PUT "$$A/coding_provider"   -H "$$H_AUTH" -H "$$H_CT" -d '{"value":"minds_cloud"}' >/dev/null
+        echo "provisioned: provider=minds_cloud, minds_api_key set"
+    restart: "no"
+    networks:
+      - default
+    labels:
+      app: "mindshub-cowork"
+      service: "cowork-provisioner"
+      component: "init"
+      team: "data"
+      environment: "production"
+      managed-by: "data@robot.com"
 
   # Optional web SPA (nginx). Only needed if you also want the browser UI.
   # You said the goal is API consumption, so it is disabled by default.
@@ -117,3 +157,5 @@ volumes:
 networks:
   dokploy-network:
     external: true
+  default:
+    driver: bridge
