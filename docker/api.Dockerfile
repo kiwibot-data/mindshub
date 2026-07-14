@@ -8,7 +8,7 @@ COPY backend/core_api/ ./core_api/
 
 RUN python -m venv /opt/venv && \
     /opt/venv/bin/pip install uv --no-cache-dir && \
-    /opt/venv/bin/uv pip install ./core_agent ./core_api
+    VIRTUAL_ENV=/opt/venv /opt/venv/bin/uv pip install ./core_agent ./core_api
 
 FROM python:3.12-slim AS runtime
 
