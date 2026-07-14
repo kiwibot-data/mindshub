@@ -23,6 +23,11 @@ services:
       COWORK_SERVER_HOST: "0.0.0.0"
       COWORK_SERVER_PORT: "26866"
       DATABASE_URI: "sqlite:////home/cowork/.cowork/cowork.db"
+      # --- Bearer auth (the API is public). /api/v1/health stays exempt. ---
+      # Token: set COWORK_AUTH_TOKEN in Dokploy env for a stable known token;
+      # if left empty the server auto-generates one into /home/cowork/.cowork/.env.
+      COWORK_REQUIRE_AUTH: "true"
+      COWORK_AUTH_TOKEN: "${COWORK_AUTH_TOKEN:-}"
       # --- Minds Cloud / MindsHub auth (primary) ---
       ANTON_MINDS_ENABLED: "true"
       ANTON_MINDS_API_KEY: "${ANTON_MINDS_API_KEY:?set ANTON_MINDS_API_KEY in Dokploy env}"
