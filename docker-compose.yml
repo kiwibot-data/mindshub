@@ -1,8 +1,8 @@
 # MindsHub Cowork — self-hosted on Dokploy (kiwibot-atlas)
 #
 # Source: https://github.com/mindsdb/mindshub (fork). The `api` service exposes
-# the REST API at :26866/api/v1 (health at /api/v1/health). Consumed via an
-# ANTON_MINDS_API_KEY.
+# the REST API at :26866/api/v1 (health at /api/v1/health). Anthropic BYOK is
+# the production default; Minds Cloud remains available as a rollback provider.
 #
 # Build: docker/api.Dockerfile installs cowork-server from PyPI (pulls
 # anton-agent + hermes-agent). No git submodules are needed at build time.
@@ -11,7 +11,7 @@
 # so Traefik can reach it. In Dokploy → Domains, point the domain to service
 # `api`, container port 26866, HTTPS/Let's Encrypt.
 #
-# Customized over upstream: api-only (web commented), Minds auth env,
+# Customized over upstream: api-only (web commented), provider provisioning,
 # kiwibot-atlas labels, resource limits, restart policy.
 
 services:
@@ -24,19 +24,14 @@ services:
       COWORK_SERVER_PORT: "26866"
       DATABASE_URI: "sqlite:////home/cowork/.cowork/cowork.db"
       # --- Bearer auth (the API is public). /api/v1/health stays exempt. ---
-      # Token: set COWORK_AUTH_TOKEN in Dokploy env for a stable known token;
-      # if left empty the server auto-generates one into /home/cowork/.cowork/.env.
+      # A stable token is required because the provisioner must authenticate.
       COWORK_REQUIRE_AUTH: "true"
-      COWORK_AUTH_TOKEN: "${COWORK_AUTH_TOKEN:-}"
-      # --- Minds Cloud / MindsHub auth (primary) ---
+      COWORK_AUTH_TOKEN: "${COWORK_AUTH_TOKEN:?set COWORK_AUTH_TOKEN in Dokploy env}"
+      # --- Optional Minds Cloud / MindsHub rollback provider ---
       ANTON_MINDS_ENABLED: "true"
-      ANTON_MINDS_API_KEY: "${ANTON_MINDS_API_KEY:?set ANTON_MINDS_API_KEY in Dokploy env}"
+      ANTON_MINDS_API_KEY: "${ANTON_MINDS_API_KEY:-}"
       ANTON_MINDS_URL: "${ANTON_MINDS_URL:-}"           # leave empty to use the Minds cloud default
       # ANTON_MINDS_MIND_NAME: "${ANTON_MINDS_MIND_NAME:-}"
-      # --- Optional BYOK overrides (only if NOT using Minds routing) ---
-      # ANTON_PLANNING_PROVIDER: "anthropic"
-      # ANTON_ANTHROPIC_API_KEY: "${ANTON_ANTHROPIC_API_KEY:-}"
-      # ANTON_OPENAI_API_KEY: "${ANTON_OPENAI_API_KEY:-}"
       ANTON_DISABLE_AUTOUPDATES: "true"
       ANTON_ANALYTICS_ENABLED: "false"
     volumes:
@@ -87,9 +82,10 @@ services:
 
   # One-shot provisioner: after the API is healthy, it writes the LLM provider
   # settings into the server DB (which lives in the volume, NOT in git). This
-  # makes the Minds provider config reproducible on every deploy / fresh volume.
-  # Requires COWORK_AUTH_TOKEN + ANTON_MINDS_API_KEY in the Dokploy env; if
-  # either is missing it skips gracefully (does not break the deploy).
+  # makes provider config reproducible on every deploy / fresh volume.
+  # Anthropic BYOK is read from a Compose secret so it never enters Git, the
+  # Compose environment, or the curl process arguments. Provider/model env vars
+  # keep rollback to Minds Cloud explicit without changing this file.
   provisioner:
     image: curlimages/curl:8.11.1
     depends_on:
@@ -97,23 +93,86 @@ services:
         condition: service_healthy
     environment:
       ANTON_MINDS_API_KEY: "${ANTON_MINDS_API_KEY:-}"
-      COWORK_AUTH_TOKEN: "${COWORK_AUTH_TOKEN:-}"
+      ANTON_PLANNING_PROVIDER: "${ANTON_PLANNING_PROVIDER:-anthropic}"
+      ANTON_CODING_PROVIDER: "${ANTON_CODING_PROVIDER:-anthropic}"
+      # Empty model values are resolved below according to each provider so a
+      # Minds Cloud rollback never receives Anthropic-specific model IDs.
+      ANTON_PLANNING_MODEL: "${ANTON_PLANNING_MODEL:-}"
+      ANTON_CODING_MODEL: "${ANTON_CODING_MODEL:-}"
+      COWORK_AUTH_TOKEN: "${COWORK_AUTH_TOKEN:?set COWORK_AUTH_TOKEN in Dokploy env}"
+    secrets:
+      - cowork_anthropic_api_key
+    # curlimages/curl runs as a non-root user, while the host secret is
+    # intentionally root:root 0600. Run this one-shot container as root with no
+    # capabilities and no privilege escalation so it can only read the mount.
+    user: "0:0"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
     entrypoint:
       - sh
       - -c
       - |
-        set -e
-        if [ -z "$$COWORK_AUTH_TOKEN" ] || [ -z "$$ANTON_MINDS_API_KEY" ]; then
-          echo "SKIP provisioning: set COWORK_AUTH_TOKEN and ANTON_MINDS_API_KEY in Dokploy env"; exit 0
-        fi
+        set -eu
         A=http://api:26866/api/v1/settings
         H_AUTH="Authorization: Bearer $$COWORK_AUTH_TOKEN"
         H_CT="Content-Type: application/json"
-        curl -fsS -X PUT "$$A/minds_api_key"     -H "$$H_AUTH" -H "$$H_CT" -d "{\"value\":\"$$ANTON_MINDS_API_KEY\"}" >/dev/null
-        curl -fsS -X PUT "$$A/planning_provider" -H "$$H_AUTH" -H "$$H_CT" -d '{"value":"minds_cloud"}' >/dev/null
-        curl -fsS -X PUT "$$A/coding_provider"   -H "$$H_AUTH" -H "$$H_CT" -d '{"value":"minds_cloud"}' >/dev/null
-        echo "provisioned: provider=minds_cloud, minds_api_key set"
-    restart: "no"
+        ANTHROPIC_API_KEY="$$(cat /run/secrets/cowork_anthropic_api_key 2>/dev/null || true)"
+
+        for provider in "$$ANTON_PLANNING_PROVIDER" "$$ANTON_CODING_PROVIDER"; do
+          case "$$provider" in
+            anthropic|minds_cloud) ;;
+            *) echo "ERROR provisioning: unsupported provider $$provider" >&2; exit 1 ;;
+          esac
+        done
+
+        if [ -z "$$ANTON_PLANNING_MODEL" ]; then
+          case "$$ANTON_PLANNING_PROVIDER" in
+            anthropic) ANTON_PLANNING_MODEL=claude-sonnet-5 ;;
+            minds_cloud) ANTON_PLANNING_MODEL=sonnet ;;
+          esac
+        fi
+
+        if [ -z "$$ANTON_CODING_MODEL" ]; then
+          case "$$ANTON_CODING_PROVIDER" in
+            anthropic) ANTON_CODING_MODEL=claude-haiku-4-5-20251001 ;;
+            minds_cloud) ANTON_CODING_MODEL=haiku ;;
+          esac
+        fi
+
+        put_setting() {
+          key="$$1"
+          value="$$2"
+          printf '{"value":"%s"}' "$$value" |
+            curl -fsS -X PUT "$$A/$$key" -H "$$H_AUTH" -H "$$H_CT" --data-binary @- >/dev/null
+        }
+
+        provider_requires() {
+          [ "$$ANTON_PLANNING_PROVIDER" = "$$1" ] || [ "$$ANTON_CODING_PROVIDER" = "$$1" ]
+        }
+
+        if provider_requires anthropic; then
+          if [ -z "$$ANTHROPIC_API_KEY" ]; then
+            echo "ERROR provisioning: Anthropic provider selected but secret is empty" >&2; exit 1
+          fi
+          put_setting anthropic_api_key "$$ANTHROPIC_API_KEY"
+        fi
+
+        if provider_requires minds_cloud; then
+          if [ -z "$$ANTON_MINDS_API_KEY" ]; then
+            echo "ERROR provisioning: Minds Cloud provider selected but ANTON_MINDS_API_KEY is empty" >&2; exit 1
+          fi
+          put_setting minds_api_key "$$ANTON_MINDS_API_KEY"
+        fi
+
+        put_setting planning_provider "$$ANTON_PLANNING_PROVIDER"
+        put_setting coding_provider "$$ANTON_CODING_PROVIDER"
+        put_setting planning_model "$$ANTON_PLANNING_MODEL"
+        put_setting coding_model "$$ANTON_CODING_MODEL"
+        echo "provisioned: planning=$$ANTON_PLANNING_PROVIDER/$$ANTON_PLANNING_MODEL coding=$$ANTON_CODING_PROVIDER/$$ANTON_CODING_MODEL"
+    restart: "on-failure:3"
     networks:
       - default
     labels:
@@ -153,6 +212,10 @@ services:
 volumes:
   cowork-data:
     driver: local
+
+secrets:
+  cowork_anthropic_api_key:
+    file: "${ANTON_ANTHROPIC_API_KEY_FILE:-/etc/dokploy/secrets/mindshub/anthropic_api_key}"
 
 networks:
   dokploy-network:
