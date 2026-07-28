@@ -1,8 +1,8 @@
 # MindsHub Cowork — self-hosted on Dokploy (kiwibot-atlas)
 #
 # Source: https://github.com/mindsdb/mindshub (fork). The `api` service exposes
-# the REST API at :26866/api/v1 (health at /api/v1/health). Anthropic BYOK is
-# the production default; Minds Cloud remains available as a rollback provider.
+# the REST API at :26866/api/v1 (health at /api/v1/health). Gemini BYOK is the
+# production default; Anthropic and Minds Cloud remain rollback providers.
 #
 # Build: docker/api.Dockerfile installs cowork-server from PyPI (pulls
 # anton-agent + hermes-agent). No git submodules are needed at build time.
@@ -83,9 +83,9 @@ services:
   # One-shot provisioner: after the API is healthy, it writes the LLM provider
   # settings into the server DB (which lives in the volume, NOT in git). This
   # makes provider config reproducible on every deploy / fresh volume.
-  # Anthropic BYOK is read from a Compose secret so it never enters Git, the
+  # BYOK credentials are read from Compose secrets so they never enter Git, the
   # Compose environment, or the curl process arguments. Provider/model env vars
-  # keep rollback to Minds Cloud explicit without changing this file.
+  # keep rollback explicit without changing this file.
   provisioner:
     image: curlimages/curl:8.11.1
     depends_on:
@@ -93,8 +93,8 @@ services:
         condition: service_healthy
     environment:
       ANTON_MINDS_API_KEY: "${ANTON_MINDS_API_KEY:-}"
-      ANTON_PLANNING_PROVIDER: "${ANTON_PLANNING_PROVIDER:-anthropic}"
-      ANTON_CODING_PROVIDER: "${ANTON_CODING_PROVIDER:-anthropic}"
+      ANTON_PLANNING_PROVIDER: "${ANTON_PLANNING_PROVIDER:-gemini}"
+      ANTON_CODING_PROVIDER: "${ANTON_CODING_PROVIDER:-gemini}"
       # Empty model values are resolved below according to each provider so a
       # Minds Cloud rollback never receives Anthropic-specific model IDs.
       ANTON_PLANNING_MODEL: "${ANTON_PLANNING_MODEL:-}"
@@ -102,6 +102,7 @@ services:
       COWORK_AUTH_TOKEN: "${COWORK_AUTH_TOKEN:?set COWORK_AUTH_TOKEN in Dokploy env}"
     secrets:
       - cowork_anthropic_api_key
+      - cowork_gemini_api_key
     # curlimages/curl runs as a non-root user, while the host secret is
     # intentionally root:root 0600. Run this one-shot container as root with no
     # capabilities and no privilege escalation so it can only read the mount.
@@ -120,10 +121,11 @@ services:
         H_AUTH="Authorization: Bearer $$COWORK_AUTH_TOKEN"
         H_CT="Content-Type: application/json"
         ANTHROPIC_API_KEY="$$(cat /run/secrets/cowork_anthropic_api_key 2>/dev/null || true)"
+        GEMINI_API_KEY="$$(cat /run/secrets/cowork_gemini_api_key 2>/dev/null || true)"
 
         for provider in "$$ANTON_PLANNING_PROVIDER" "$$ANTON_CODING_PROVIDER"; do
           case "$$provider" in
-            anthropic|minds_cloud) ;;
+            anthropic|gemini|minds_cloud) ;;
             *) echo "ERROR provisioning: unsupported provider $$provider" >&2; exit 1 ;;
           esac
         done
@@ -131,6 +133,7 @@ services:
         if [ -z "$$ANTON_PLANNING_MODEL" ]; then
           case "$$ANTON_PLANNING_PROVIDER" in
             anthropic) ANTON_PLANNING_MODEL=claude-sonnet-5 ;;
+            gemini) ANTON_PLANNING_MODEL=gemini-2.5-flash ;;
             minds_cloud) ANTON_PLANNING_MODEL=sonnet ;;
           esac
         fi
@@ -138,6 +141,7 @@ services:
         if [ -z "$$ANTON_CODING_MODEL" ]; then
           case "$$ANTON_CODING_PROVIDER" in
             anthropic) ANTON_CODING_MODEL=claude-haiku-4-5-20251001 ;;
+            gemini) ANTON_CODING_MODEL=gemini-2.5-flash ;;
             minds_cloud) ANTON_CODING_MODEL=haiku ;;
           esac
         fi
@@ -158,6 +162,13 @@ services:
             echo "ERROR provisioning: Anthropic provider selected but secret is empty" >&2; exit 1
           fi
           put_setting anthropic_api_key "$$ANTHROPIC_API_KEY"
+        fi
+
+        if provider_requires gemini; then
+          if [ -z "$$GEMINI_API_KEY" ]; then
+            echo "ERROR provisioning: Gemini provider selected but secret is empty" >&2; exit 1
+          fi
+          put_setting gemini_api_key "$$GEMINI_API_KEY"
         fi
 
         if provider_requires minds_cloud; then
@@ -216,6 +227,8 @@ volumes:
 secrets:
   cowork_anthropic_api_key:
     file: "${ANTON_ANTHROPIC_API_KEY_FILE:-/etc/dokploy/secrets/mindshub/anthropic_api_key}"
+  cowork_gemini_api_key:
+    file: "${ANTON_GEMINI_API_KEY_FILE:-/etc/dokploy/secrets/mindshub/gemini_api_key}"
 
 networks:
   dokploy-network:
